@@ -1,0 +1,58 @@
+---
+- name: Основная база и реплика здоровы
+  community.docker.docker_container_info:
+    name: "{{ item }}"
+  register: database_info
+  until: database_info.exists and database_info.container.State.Health.Status == 'healthy'
+  retries: 30
+  delay: 2
+  loop:
+    - "{{ containers.primary }}"
+    - "{{ containers.replica }}"
+
+- name: Роль сервиса в базе (пароль — из состояния Terraform)
+  community.docker.docker_container_exec:
+    container: "{{ containers.primary }}"
+    argv: [psql, -v, ON_ERROR_STOP=1, -U, postgres, -d, orders, -f, "-"]
+    # Пароль идёт через stdin, а не аргументом: аргументы видны в списке процессов.
+    stdin: |
+      DO $$ BEGIN
+        IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'app') THEN
+          CREATE ROLE app LOGIN;
+        END IF;
+      END $$;
+      ALTER ROLE app PASSWORD '{{ app_db_password }}';
+      GRANT pg_monitor TO app;
+      CREATE TABLE IF NOT EXISTS schema_migrations (
+        version    text PRIMARY KEY,
+        applied_at timestamptz NOT NULL DEFAULT now()
+      );
+  no_log: true
+  changed_when: false
+
+- name: Применённые миграции
+  community.docker.docker_container_exec:
+    container: "{{ containers.primary }}"
+    argv: [psql, -U, postgres, -d, orders, -tAc, "SELECT version FROM schema_migrations"]
+  register: database_applied
+  changed_when: false
+
+- name: Новые миграции — каждая в одной транзакции с отметкой о применении
+  community.docker.docker_container_exec:
+    container: "{{ containers.primary }}"
+    argv: [psql, -v, ON_ERROR_STOP=1, -1, -U, postgres, -d, orders, -f, "-"]
+    stdin: |
+      {{ lookup('ansible.builtin.file', item) }}
+      INSERT INTO schema_migrations (version) VALUES ('{{ item | basename | splitext | first }}');
+  loop: "{{ query('ansible.builtin.fileglob', role_path + '/files/migrations/*.sql') | sort }}"
+  loop_control:
+    label: "{{ item | basename }}"
+  when: (item | basename | splitext | first) not in database_applied.stdout_lines
+
+- name: Реплика получает изменения потоком
+  community.docker.docker_container_exec:
+    container: "{{ containers.primary }}"
+    argv: [psql, -U, postgres, -d, orders, -tAc, "SELECT count(*) FROM pg_stat_replication WHERE state = 'streaming'"]
+  register: database_streaming
+  changed_when: false
+  failed_when: database_streaming.stdout | int < 1

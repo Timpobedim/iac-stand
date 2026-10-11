@@ -1,0 +1,36 @@
+---
+# Без инвентаря ansible-playbook пропускает плей с «no hosts matched» и выходит с кодом 0:
+# выката не было, а сборка зелёная. Так и случилось, когда ansible.cfg оказался в каталоге
+# с правами 777 (том с Windows) и Ansible молча его проигнорировал. Поэтому первым делом —
+# проверка, что стенд в инвентаре есть.
+- name: Инвентарь стенда загружен
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Группа stand есть
+      ansible.builtin.assert:
+        that: groups['stand'] | default([]) | length == 1
+        fail_msg: "инвентарь не загружен: запускайте с -i inventory/terraform.py или ANSIBLE_CONFIG=ansible/ansible.cfg"
+
+# Удалить экземпляры сервиса: без этого terraform destroy не удалит сети, к которым они подключены.
+- name: Снять сервис заказов
+  hosts: stand
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Найти экземпляры по метке
+      community.docker.docker_host_info:
+        containers: true
+        containers_all: true
+        containers_filters:
+          label: "iac-stand.prefix={{ prefix }}"
+      register: host
+
+    - name: Удалить экземпляры
+      community.docker.docker_container:
+        name: "{{ item.Names[0] | regex_replace('^/', '') }}"
+        state: absent
+      loop: "{{ host.containers }}"
+      loop_control:
+        label: "{{ item.Names[0] }}"

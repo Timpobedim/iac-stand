@@ -1,0 +1,35 @@
+---
+# Без инвентаря ansible-playbook пропускает плей с «no hosts matched» и выходит с кодом 0:
+# выката не было, а сборка зелёная. Так и случилось, когда ansible.cfg оказался в каталоге
+# с правами 777 (том с Windows) и Ansible молча его проигнорировал. Поэтому первым делом —
+# проверка, что стенд в инвентаре есть.
+- name: Инвентарь стенда загружен
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Группа stand есть
+      ansible.builtin.assert:
+        that: groups['stand'] | default([]) | length == 1
+        fail_msg: "инвентарь не загружен: запускайте с -i inventory/terraform.py или ANSIBLE_CONFIG=ansible/ansible.cfg"
+
+# Выкат сервиса заказов поверх инфраструктуры, созданной Terraform.
+# Terraform отвечает за долгоживущее: сети, базы, nginx. Ansible — за релиз: миграции,
+# поочерёдную замену экземпляров с проверкой здоровья и откат, если новая версия не поднялась.
+#
+#   ansible-playbook deploy.yml -e app_version=42
+#   ansible-playbook deploy.yml -e app_version=43 -e bad_release=true   # учебная авария
+- name: Выкат сервиса заказов
+  hosts: stand
+  connection: local
+  gather_facts: false
+  vars:
+    bad_release: false
+  pre_tasks:
+    - name: Версия задана
+      ansible.builtin.assert:
+        that: app_version is defined and app_version | string | length > 0
+        fail_msg: "нужен -e app_version=<версия образа stand-app>"
+  roles:
+    - database
+    - release

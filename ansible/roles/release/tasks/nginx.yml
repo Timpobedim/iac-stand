@@ -1,0 +1,18 @@
+---
+# Записать конфигурацию nginx со списком экземпляров и перечитать её без перезапуска.
+- name: Конфигурация nginx
+  community.docker.docker_container_copy_into:
+    container: "{{ containers.nginx }}"
+    container_path: /etc/nginx/conf.d/default.conf
+    content: "{{ lookup('ansible.builtin.template', 'nginx.conf.j2') }}"
+    owner_id: 101
+    group_id: 101
+    # Модуль принимает mode числом: строку "0644" он читает как десятичное 644 (= 0o1204),
+    # и nginx теряет право читать свой конфиг. 420 — это 0o644.
+    mode: 420
+
+- name: Проверить и перечитать конфигурацию nginx
+  community.docker.docker_container_exec:
+    container: "{{ containers.nginx }}"
+    argv: [sh, -c, "nginx -t -q && nginx -s reload"]
+  changed_when: true

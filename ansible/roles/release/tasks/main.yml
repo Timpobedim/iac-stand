@@ -1,0 +1,50 @@
+---
+- name: Образ новой версии собран
+  community.docker.docker_image_info:
+    name: "{{ release_image }}:{{ app_version }}"
+  register: release_new_image
+  failed_when: release_new_image.images | length == 0
+
+- name: Что работает сейчас
+  community.docker.docker_container_info:
+    name: "{{ prefix }}-app-{{ item }}"
+  register: release_current
+  loop: "{{ range(1, release_instances + 1) | list }}"
+
+- name: Запомнить текущую версию для отката и экземпляры в балансировке
+  ansible.builtin.set_fact:
+    release_previous_image: "{{ (release_current.results | selectattr('exists') | map(attribute='container.Config.Image') | list + [''])[0] }}"
+    release_in_service: >-
+      {{ release_current.results | selectattr('exists')
+         | selectattr('container.State.Health.Status', 'equalto', 'healthy')
+         | map(attribute='container.Name') | map('regex_replace', '^/', '') | list }}
+
+- name: Поочерёдный выкат с откатом
+  block:
+    - name: Заменить экземпляры по одному
+      ansible.builtin.include_tasks: instance.yml
+      loop: "{{ range(1, release_instances + 1) | list }}"
+      loop_control:
+        loop_var: n
+      vars:
+        instance_name: "{{ prefix }}-app-{{ n }}"
+        image: "{{ release_image }}:{{ app_version }}"
+        # Учебная авария: релиз с ошибкой в конфигурации — неверный пароль базы.
+        db_password: "{{ 'wrong-password' if bad_release | bool else app_db_password }}"
+  rescue:
+    - name: Откатить экземпляры на предыдущую версию
+      ansible.builtin.include_tasks: instance.yml
+      loop: "{{ range(1, release_instances + 1) | list }}"
+      loop_control:
+        loop_var: n
+      vars:
+        instance_name: "{{ prefix }}-app-{{ n }}"
+        image: "{{ release_previous_image }}"
+        db_password: "{{ app_db_password }}"
+      when: release_previous_image | length > 0
+
+    - name: Релиз не состоялся
+      ansible.builtin.fail:
+        msg: >-
+          {{ release_image }}:{{ app_version }} не прошёл проверку здоровья.
+          {{ 'Возвращена ' ~ release_previous_image if release_previous_image else 'Предыдущей версии не было.' }}

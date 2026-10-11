@@ -1,0 +1,69 @@
+# Окружение CI стенда: Jenkins, хранилище состояния Terraform и «ящик инструментов».
+# Сам стенд (сети, базы, nginx, сервис) создают Terraform и Ansible — не этот файл.
+#
+#   scripts/init-env.sh                      # один раз: .env со случайными паролями
+#   docker compose up -d --build             # Jenkins: http://127.0.0.1:8088
+#   docker compose run --rm tools up         # то же, что пайплайн, но с машины разработчика
+name: iac-stand-ci
+
+x-tools: &tools
+  build: ./jenkins
+  image: iac-stand-jenkins:local
+  # Доступ к сокету Docker даёт группа его владельца, а не запуск от root.
+  # На Docker Desktop сокет принадлежит группе 0, на Linux — группе docker: см. .env.
+  group_add:
+    - "${DOCKER_SOCKET_GID:-0}"
+
+services:
+  tfstate:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: tfstate
+      POSTGRES_USER: tfstate
+      POSTGRES_PASSWORD: "${TFSTATE_PASSWORD:?нет .env — запустите scripts/init-env.sh}"
+    volumes:
+      - tfstate:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tfstate -d tfstate"]
+      interval: 2s
+      retries: 15
+    networks: [ci]
+
+  jenkins:
+    <<: *tools
+    environment:
+      JENKINS_ADMIN_PASSWORD: "${JENKINS_ADMIN_PASSWORD:?нет .env — запустите scripts/init-env.sh}"
+      TF_PG_CONN_STR: "postgres://tfstate:${TFSTATE_PASSWORD}@tfstate:5432/tfstate?sslmode=disable"
+    ports:
+      - "127.0.0.1:8088:8080"
+    volumes:
+      - jenkins_home:/var/jenkins_home
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Репозиторий только для чтения: Jenkins клонирует его к себе, как удалённый.
+      - .:/src:ro
+    depends_on:
+      tfstate:
+        condition: service_healthy
+    networks: [ci]
+
+  tools:
+    <<: *tools
+    profiles: [tools]
+    entrypoint: ["make"]
+    working_dir: /work
+    environment:
+      PG_CONN_STR: "postgres://tfstate:${TFSTATE_PASSWORD}@tfstate:5432/tfstate?sslmode=disable"
+    volumes:
+      - .:/work
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      tfstate:
+        condition: service_healthy
+    networks: [ci]
+
+volumes:
+  tfstate:
+  jenkins_home:
+
+networks:
+  ci:

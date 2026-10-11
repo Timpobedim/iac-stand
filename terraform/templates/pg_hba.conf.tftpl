@@ -1,0 +1,6 @@
+# Доступ к PostgreSQL стенда. Всё, что не разрешено явно, запрещено последней строкой.
+# TYPE  DATABASE     USER        ADDRESS          METHOD
+local   all          all                          trust
+host    replication  replicator  ${db_subnet}     scram-sha-256
+host    orders       app         ${db_subnet}     scram-sha-256
+host    all          all         0.0.0.0/0        reject

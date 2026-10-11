@@ -1,0 +1,6 @@
+---
+release_instances: 2
+release_image: stand-app
+# Сколько ждать, пока новый экземпляр станет здоровым: проверка в образе — раз в 5 с, 3 попытки.
+release_health_retries: 20
+release_health_delay: 2

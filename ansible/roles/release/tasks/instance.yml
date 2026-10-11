@@ -1,0 +1,61 @@
+---
+# Заменить один экземпляр: вывести из балансировки, поднять новую версию, дождаться
+# здоровья, вернуть в балансировку. Остальные экземпляры в это время обслуживают запросы.
+- name: Вывести экземпляр из балансировки
+  ansible.builtin.include_tasks: nginx.yml
+  vars:
+    upstreams: "{{ release_in_service | difference([instance_name]) }}"
+  when: instance_name in release_in_service and release_in_service | length > 1
+
+- name: Запустить экземпляр из образа
+  community.docker.docker_container:
+    name: "{{ instance_name }}"
+    image: "{{ image }}"
+    recreate: true
+    state: started
+    restart_policy: unless-stopped
+    memory: 256m
+    read_only: true
+    tmpfs:
+      - /tmp
+    networks_cli_compatible: true
+    networks:
+      - name: "{{ networks.app }}"
+      - name: "{{ networks.db }}"
+    env:
+      APP_VERSION: "{{ image.split(':') | last }}"
+      PRIMARY_URL: "postgresql://app:{{ db_password }}@db-primary:5432/orders"
+      REPLICA_URL: "postgresql://app:{{ db_password }}@db-replica:5432/orders"
+    labels:
+      iac-stand.prefix: "{{ prefix }}"
+      iac-stand.role: app
+  no_log: true
+
+- name: Дождаться, пока экземпляр станет здоровым
+  community.docker.docker_container_info:
+    name: "{{ instance_name }}"
+  register: release_info
+  until: release_info.container.State.Health.Status in ['healthy', 'unhealthy']
+  retries: "{{ release_health_retries }}"
+  delay: "{{ release_health_delay }}"
+  failed_when: false
+  # Ответ docker_container_info содержит Config.Env — пароль базы. Без no_log он попадает
+  # в журнал сборки при первой же неудаче.
+  no_log: true
+
+- name: Экземпляр здоров
+  ansible.builtin.assert:
+    that: release_info.container.State.Health.Status == 'healthy'
+    fail_msg: >-
+      {{ instance_name }}: {{ release_info.container.State.Health.Status }};
+      последняя проверка: {{ (release_info.container.State.Health.Log | last).Output | default('') | trim | truncate(300) }}
+    quiet: true
+
+- name: Вернуть экземпляр в балансировку
+  ansible.builtin.set_fact:
+    release_in_service: "{{ (release_in_service + [instance_name]) | unique | sort }}"
+
+- name: Обновить nginx
+  ansible.builtin.include_tasks: nginx.yml
+  vars:
+    upstreams: "{{ release_in_service }}"

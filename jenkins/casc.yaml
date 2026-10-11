@@ -1,0 +1,54 @@
+# Jenkins как код (Configuration as Code). Мастер настройки отключён, пользователь, секреты
+# и задача создаются из этого файла при каждом старте. Пароли — только из переменных окружения,
+# которые compose берёт из .env (он в .gitignore).
+jenkins:
+  systemMessage: "iac-stand: Jenkins настроен из jenkins/casc.yaml"
+  numExecutors: 1
+  mode: NORMAL
+  securityRealm:
+    local:
+      allowsSignup: false
+      users:
+        - id: admin
+          name: admin
+          password: "${JENKINS_ADMIN_PASSWORD}"
+  authorizationStrategy:
+    loggedInUsersCanDoAnything:
+      allowAnonymousRead: false
+  remotingSecurity:
+    enabled: true
+
+credentials:
+  system:
+    domainCredentials:
+      - credentials:
+          - string:
+              scope: GLOBAL
+              id: tf-pg-conn
+              description: "Строка подключения к хранилищу состояния Terraform"
+              secret: "${TF_PG_CONN_STR}"
+
+unclassified:
+  location:
+    url: "http://127.0.0.1:8088/"
+
+jobs:
+  - script: |
+      pipelineJob('iac-stand') {
+        description('Проверки → образ → Terraform → выкат Ansible → проверка стенда. Jenkinsfile в корне репозитория.')
+        parameters {
+          booleanParam('BAD_RELEASE', false, 'Учебная авария: выкатить релиз с неверным паролем базы и убедиться, что он откатится')
+        }
+        definition {
+          cpsScm {
+            scm {
+              git {
+                remote { url('file:///src') }
+                branch('*/main')
+              }
+            }
+            scriptPath('Jenkinsfile')
+            lightweight(false)
+          }
+        }
+      }

@@ -1,0 +1,11 @@
+line-length = 120
+target-version = "py312"
+
+[lint]
+select = ["E", "F", "W", "I", "B", "UP", "S", "C4", "SIM", "PT", "RUF", "DTZ"]
+# RUF001-003: в русских строках есть кириллица, похожая на латиницу, — это нормально.
+ignore = ["RUF001", "RUF002", "RUF003"]
+
+[lint.per-file-ignores]
+"**/tests/**" = ["S101", "S105", "S106", "S603", "S607", "S608"]
+"tests/**" = ["S101", "S105", "S106", "S603", "S607", "S608"]
